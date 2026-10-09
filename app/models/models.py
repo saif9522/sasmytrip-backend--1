@@ -258,32 +258,6 @@ class Offer(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-class EnquiryStatus(str, enum.Enum):
-    NEW = "new"
-    CONTACTED = "contacted"
-    CONVERTED = "converted"   # booked
-    CLOSED = "closed"         # not interested / lost
-
-
-class Enquiry(Base):
-    """A lead from a service page (trains, buses, cabs, visa, hajj & umrah ...).
-    The team follows up offline and updates the status from Admin → Enquiries."""
-    __tablename__ = "enquiries"
-
-    id = Column(Integer, primary_key=True, index=True)
-    service = Column(String(30), nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
-    name = Column(String(120), nullable=False)
-    email = Column(String(160), nullable=True)
-    phone = Column(String(20), nullable=False)
-    details_json = Column(Text, nullable=True)     # {"From": "Delhi", "To": "Mumbai", "Date": "2026-11-02", ...}
-    message = Column(Text, nullable=True)
-    status = Column(Enum(EnquiryStatus), default=EnquiryStatus.NEW, index=True)
-    admin_note = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
 class HomeCard(Base):
     """Image cards for home-page carousels (airlines, hotel collections, curated lists, hidden gems)."""
     __tablename__ = "home_cards"

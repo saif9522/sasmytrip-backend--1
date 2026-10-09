@@ -79,6 +79,8 @@ def seed_super_admin():
     ),
 )
 def register(payload: RegisterRequest, db: Session = Depends(get_db)):
+    if payload.role == UserRole.DISTRIBUTOR:
+        raise HTTPException(status_code=422, detail="Distributor accounts are no longer offered. Register as a Travel Agent instead.")
     existing = db.query(User).filter(User.email == payload.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="An account with this email already exists.")

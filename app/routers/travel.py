@@ -15,7 +15,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
-from app.core.security import get_current_user, require_roles
+from app.core.security import get_current_user, require_booker, require_roles
 from app.database import get_db
 from app.models.models import (
     Notification, PaymentStatus, SupplierBooking, SupplierBookingStatus, User, UserRole,
@@ -30,6 +30,8 @@ from app.services.tbo import flights as tbo_flights
 from app.services.tbo import hotels as tbo_hotels
 from app.services.tbo.airports import city_of, search_airports
 from app.services.tbo.config import apply_markup
+from app.services.providers.base import ProviderError
+from app.routers import services_api
 
 flights_router = APIRouter(prefix="/api/flights", tags=["Flights (TBO live)"])
 hotels_router = APIRouter(prefix="/api/hotels", tags=["Hotels (TBO live)"])
@@ -111,7 +113,7 @@ async def flight_ssr(payload: TraceRequest, request: Request):
 @flights_router.post(
     "/bookings", response_model=SupplierBookingOut, status_code=201,
     summary="Create a flight booking (Customer) — price is re-quoted server side",
-    dependencies=[Depends(require_roles(UserRole.CUSTOMER))],
+    dependencies=[Depends(require_booker)],
 )
 async def create_flight_booking(payload: FlightBookingCreate, request: Request,
                                 db: Session = Depends(get_db), user: User = Depends(get_current_user)):
@@ -245,7 +247,7 @@ async def hotel_prebook(payload: PreBookRequest):
 @hotels_router.post(
     "/bookings", response_model=SupplierBookingOut, status_code=201,
     summary="Create a hotel booking (Customer) — PreBook is re-run server side",
-    dependencies=[Depends(require_roles(UserRole.CUSTOMER))],
+    dependencies=[Depends(require_booker)],
 )
 async def create_hotel_booking(payload: HotelBookingCreate, db: Session = Depends(get_db),
                                user: User = Depends(get_current_user)):
@@ -307,8 +309,8 @@ def _get_own(db: Session, booking_id: int, user: User) -> SupplierBooking:
     return b
 
 
-@bookings_router.get("/my", response_model=List[SupplierBookingOut], summary="My flight & hotel bookings",
-                     dependencies=[Depends(require_roles(UserRole.CUSTOMER))])
+@bookings_router.get("/my", response_model=List[SupplierBookingOut], summary="My bookings (Traveller / Agent)",
+                     dependencies=[Depends(require_roles(UserRole.CUSTOMER, UserRole.AGENT))])
 def my_travel_bookings(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     rows = (db.query(SupplierBooking).filter(SupplierBooking.customer_id == user.id)
             .order_by(SupplierBooking.created_at.desc()).all())
@@ -334,7 +336,7 @@ def get_travel_booking(booking_id: int, db: Session = Depends(get_db), user: Use
                  "`4000 0000 0000 0002` declines). After a successful charge the booking is issued at TBO: "
                  "LCC flights → Ticket; GDS flights → Book + Ticket; hotels → Book (vouchered). "
                  "If TBO fails the payment is marked refunded. Replace with a real gateway before going live."),
-    dependencies=[Depends(require_roles(UserRole.CUSTOMER))],
+    dependencies=[Depends(require_booker)],
 )
 async def pay_travel_booking(booking_id: int, payload: TravelPaymentRequest, request: Request,
                              db: Session = Depends(get_db), user: User = Depends(get_current_user)):
@@ -368,7 +370,7 @@ async def pay_travel_booking(booking_id: int, payload: TravelPaymentRequest, req
             b.supplier_json = _dump({"tickets": issued})
             b.pnr = " / ".join(str(x["pnr"]) for x in issued if x.get("pnr"))
             b.supplier_booking_id = ",".join(str(x["booking_id"]) for x in issued if x.get("booking_id"))
-        else:
+        elif b.product == "hotel":
             res = await tbo_hotels.book(
                 booking_code=req["booking_code"], nationality=req["nationality"], net_amount=req["net_amount"],
                 rooms_details=req["rooms_details"], client_reference=f"SMT{b.id:07d}", end_user_ip=ip,
@@ -377,6 +379,16 @@ async def pay_travel_booking(booking_id: int, payload: TravelPaymentRequest, req
             b.supplier_booking_id = str(res["booking_id"]) if res.get("booking_id") else None
             b.confirmation_no = res.get("confirmation_no")
             b.pnr = res.get("booking_ref_no")
+        else:
+            # Trains, buses, cabs, cruise, hajj & umrah, insurance, forex, visa, packages, activities
+            try:
+                res = await services_api.issue_booking(b)
+            except ProviderError as pe:
+                raise tbo_client.TBOError(pe.message, status_code=pe.status_code)
+            b.supplier_json = _dump(res)
+            b.pnr = res.get("reference")
+            b.confirmation_no = res.get("reference")
+            b.supplier_booking_id = res.get("supplier_booking_id")
         b.status = SupplierBookingStatus.CONFIRMED
         b.error_message = None
         db.add(Notification(user_id=user.id, title="Booking confirmed",
@@ -413,6 +425,23 @@ async def cancel_travel_booking(booking_id: int, payload: CancelRequest, request
         return SupplierBookingOut.from_model(b)
     if b.status != SupplierBookingStatus.CONFIRMED or not b.supplier_booking_id:
         raise HTTPException(status_code=400, detail="Only confirmed bookings can be cancelled.")
+
+    if b.product not in ("flight", "hotel"):
+        try:
+            res = await services_api.cancel_booking(b, payload.remarks or "Cancelled by customer")
+        except ProviderError as pe:
+            raise HTTPException(status_code=pe.status_code, detail=pe.message)
+        done = res.get("status") == "cancelled"
+        b.status = SupplierBookingStatus.CANCELLED if done else SupplierBookingStatus.CANCELLATION_REQUESTED
+        if done and b.payment_status == PaymentStatus.PAID:
+            b.payment_status = PaymentStatus.REFUNDED
+        b.change_request_id = res.get("reference")
+        db.add(Notification(user_id=b.customer_id, title="Booking cancelled" if done else "Cancellation requested",
+                            message=f"{b.title}: " + ("cancelled. Refund as per the cancellation policy." if done
+                                                      else "cancellation requested with the supplier.")))
+        db.commit()
+        db.refresh(b)
+        return SupplierBookingOut.from_model(b)
 
     ip = end_user_ip(request)
     ids = []

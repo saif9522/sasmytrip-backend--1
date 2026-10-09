@@ -67,3 +67,14 @@ def require_roles(*allowed_roles: UserRole):
             )
         return current_user
     return dependency
+
+
+def require_booker(current_user: User = Depends(get_current_user)) -> User:
+    """Who can make flight / hotel / service bookings: Travellers, and Agents once an admin has approved them."""
+    if current_user.role == UserRole.CUSTOMER:
+        return current_user
+    if current_user.role == UserRole.AGENT:
+        if not current_user.is_verified:
+            raise HTTPException(status_code=403, detail="Your agent account is awaiting admin approval. You can book once it's approved.")
+        return current_user
+    raise HTTPException(status_code=403, detail="Log in with a Traveller or Agent account to book.")

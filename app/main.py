@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
 from app.database import Base, engine  # noqa: E402
 from app.routers import auth, listings, bookings, admin, wishlist, reviews, notifications, users  # noqa: E402
-from app.routers import travel, offers, enquiries, home_content  # noqa: E402
+from app.routers import travel, offers, home_content, services_api  # noqa: E402
 
 # Creates tables only if they don't already exist — never drops/recreates
 # existing tables, so real data in sasmytrip.db is preserved.
@@ -67,7 +67,7 @@ app.include_router(travel.hotels_router)
 app.include_router(travel.bookings_router)
 app.include_router(travel.admin_router)
 app.include_router(offers.router)
-app.include_router(enquiries.router)
+app.include_router(services_api.router)
 app.include_router(home_content.router)
 
 
