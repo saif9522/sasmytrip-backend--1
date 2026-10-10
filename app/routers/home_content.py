@@ -14,7 +14,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.core.security import require_roles
+from app.core.security import get_current_user, require_roles
+from app.services.activity import audit
+from app.models.models import User
 from app.database import SessionLocal, get_db
 from app.models.models import HomeCard, UserRole
 
@@ -72,18 +74,19 @@ def admin_cards(db: Session = Depends(get_db)):
 
 @router.post("", response_model=CardOut, status_code=201, summary="Add card (Admin)",
              dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))])
-def add_card(payload: CardIn, db: Session = Depends(get_db)):
+def add_card(payload: CardIn, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     _check(payload.section)
     c = HomeCard(**payload.model_dump())
     db.add(c)
     db.commit()
     db.refresh(c)
+    audit(db, me, "home_card.created", f"Card #{c.id}", f"{c.section} · {c.title}")
     return c
 
 
 @router.put("/{card_id}", response_model=CardOut, summary="Edit card (Admin)",
             dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))])
-def edit_card(card_id: int, payload: CardIn, db: Session = Depends(get_db)):
+def edit_card(card_id: int, payload: CardIn, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     _check(payload.section)
     c = db.query(HomeCard).filter(HomeCard.id == card_id).first()
     if not c:
@@ -92,17 +95,20 @@ def edit_card(card_id: int, payload: CardIn, db: Session = Depends(get_db)):
         setattr(c, k, v)
     db.commit()
     db.refresh(c)
+    audit(db, me, "home_card.updated", f"Card #{c.id}", f"{c.section} · {c.title}")
     return c
 
 
 @router.delete("/{card_id}", status_code=204, summary="Delete card (Admin)",
                dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))])
-def delete_card(card_id: int, db: Session = Depends(get_db)):
+def delete_card(card_id: int, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     c = db.query(HomeCard).filter(HomeCard.id == card_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Card not found.")
+    title = c.title
     db.delete(c)
     db.commit()
+    audit(db, me, "home_card.deleted", f"Card #{card_id}", title)
 
 
 def _pic(seed):

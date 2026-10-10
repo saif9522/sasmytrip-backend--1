@@ -127,7 +127,13 @@ def reload_settings() -> TBOSettings:
 
 
 def apply_markup(amount: float, product: str) -> float:
-    """Your selling price = TBO price + % markup + flat markup (per booking)."""
-    s = settings
-    flat = s.markup_flat_flight if product == "flight" else s.markup_flat_hotel
-    return round(float(amount or 0) * (1 + s.markup_percent / 100.0) + flat, 2)
+    """Selling price = supplier price + % markup + flat markup (per booking).
+    Rates come from Admin → Settings (falling back to the TBO_MARKUP_* env values)."""
+    from app.services import settings_store as st
+    if product == "flight":
+        pct, flat = st.get_float("markup_flight_percent"), st.get_float("markup_flight_flat")
+    elif product == "hotel":
+        pct, flat = st.get_float("markup_hotel_percent"), st.get_float("markup_hotel_flat")
+    else:
+        pct, flat = st.get_float("markup_services_percent"), 0.0
+    return round(float(amount or 0) * (1 + pct / 100.0) + flat, 2)

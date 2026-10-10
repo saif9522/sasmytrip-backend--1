@@ -2,7 +2,7 @@ import secrets
 import random
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db, SessionLocal
@@ -13,6 +13,8 @@ from app.schemas.schemas import (
     SendOtpRequest, SendOtpResponse, VerifyOtpRequest,
 )
 from app.core.security import hash_password, verify_password, create_access_token, get_current_user
+from app.services.activity import audit, start_session
+from app.services import settings_store
 
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
 
@@ -78,7 +80,7 @@ def seed_super_admin():
         "Creates a new account as **Customer**, **Agent**, **Distributor**, **Admin**, or **Super Admin**."
     ),
 )
-def register(payload: RegisterRequest, db: Session = Depends(get_db)):
+def register(payload: RegisterRequest, request: Request, db: Session = Depends(get_db)):
     if payload.role == UserRole.DISTRIBUTOR:
         raise HTTPException(status_code=422, detail="Distributor accounts are no longer offered. Register as a Travel Agent instead.")
     existing = db.query(User).filter(User.email == payload.email).first()
@@ -93,14 +95,18 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         role=payload.role,
         company_name=payload.company_name,
         gstin=payload.gstin,
-        is_verified=(payload.role in (UserRole.CUSTOMER, UserRole.ADMIN, UserRole.SUPER_ADMIN)),
+        is_verified=(payload.role in (UserRole.CUSTOMER, UserRole.ADMIN, UserRole.SUPER_ADMIN)
+                     or (payload.role == UserRole.AGENT and settings_store.get_bool("agent_auto_approve"))),
         is_active=True,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
+    if user.role == UserRole.AGENT:
+        audit(db, user, "agent.registered", f"User #{user.id}", f"{user.company_name or ''} · {user.email}")
 
-    token = create_access_token({"sub": str(user.id), "role": user.role.value})
+    sid = start_session(db, user, "register", request)
+    token = create_access_token({"sub": str(user.id), "role": user.role.value, "sid": sid})
     return TokenResponse(access_token=token, user=UserOut.model_validate(user))
 
 
@@ -113,7 +119,7 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         "registered with."
     ),
 )
-def login(payload: LoginRequest, db: Session = Depends(get_db)):
+def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == payload.email).first()
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Incorrect email or password.")
@@ -130,7 +136,8 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=403, detail="This account has been deactivated.")
 
-    token = create_access_token({"sub": str(user.id), "role": user.role.value})
+    sid = start_session(db, user, "password", request)
+    token = create_access_token({"sub": str(user.id), "role": user.role.value, "sid": sid})
     return TokenResponse(access_token=token, user=UserOut.model_validate(user))
 
 
@@ -213,7 +220,7 @@ def send_otp(payload: SendOtpRequest, db: Session = Depends(get_db)):
     response_model=TokenResponse,
     summary="Verify a login OTP and log in",
 )
-def verify_otp(payload: VerifyOtpRequest, db: Session = Depends(get_db)):
+def verify_otp(payload: VerifyOtpRequest, request: Request, db: Session = Depends(get_db)):
     otp = (
         db.query(OtpCode)
         .filter(
@@ -235,5 +242,6 @@ def verify_otp(payload: VerifyOtpRequest, db: Session = Depends(get_db)):
     otp.is_used = True
     db.commit()
 
-    token = create_access_token({"sub": str(user.id), "role": user.role.value})
+    sid = start_session(db, user, "otp", request)
+    token = create_access_token({"sub": str(user.id), "role": user.role.value, "sid": sid})
     return TokenResponse(access_token=token, user=UserOut.model_validate(user))

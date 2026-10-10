@@ -16,7 +16,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.core.security import require_roles
+from app.core.security import get_current_user, require_roles
+from app.services.activity import audit
+from app.models.models import User
 from app.database import SessionLocal, get_db
 from app.models.models import Offer, UserRole
 
@@ -97,35 +99,39 @@ def admin_list_offers(db: Session = Depends(get_db)):
 
 @router.post("", response_model=OfferOut, status_code=201, summary="Create offer (Admin)",
              dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))])
-def create_offer(payload: OfferIn, db: Session = Depends(get_db)):
+def create_offer(payload: OfferIn, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     o = Offer()
     _apply(o, payload)
     db.add(o)
     db.commit()
     db.refresh(o)
+    audit(db, me, "offer.created", f"Offer #{o.id}", o.title)
     return o
 
 
 @router.put("/{offer_id}", response_model=OfferOut, summary="Edit offer (Admin)",
             dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))])
-def update_offer(offer_id: int, payload: OfferIn, db: Session = Depends(get_db)):
+def update_offer(offer_id: int, payload: OfferIn, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     o = db.query(Offer).filter(Offer.id == offer_id).first()
     if not o:
         raise HTTPException(status_code=404, detail="Offer not found.")
     _apply(o, payload)
     db.commit()
     db.refresh(o)
+    audit(db, me, "offer.updated", f"Offer #{o.id}", f"{o.title} · {'live' if o.is_active else 'hidden'}")
     return o
 
 
 @router.delete("/{offer_id}", status_code=204, summary="Delete offer (Admin)",
                dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))])
-def delete_offer(offer_id: int, db: Session = Depends(get_db)):
+def delete_offer(offer_id: int, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     o = db.query(Offer).filter(Offer.id == offer_id).first()
     if not o:
         raise HTTPException(status_code=404, detail="Offer not found.")
+    title = o.title
     db.delete(o)
     db.commit()
+    audit(db, me, "offer.deleted", f"Offer #{offer_id}", title)
 
 
 # Sample offers so the home page isn't empty on first run. Only inserted when the

@@ -28,3 +28,18 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def ensure_columns(table: str, columns: dict):
+    """Tiny migration helper: add missing columns to an existing SQLite table.
+    `columns` maps column name -> SQL type/default, e.g. {"agent_commission_percent": "FLOAT"}.
+    create_all() never alters existing tables, so new columns on old databases go through here."""
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    if table not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns(table)}
+    with engine.begin() as conn:
+        for name, ddl in columns.items():
+            if name not in existing:
+                conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {name} {ddl}'))

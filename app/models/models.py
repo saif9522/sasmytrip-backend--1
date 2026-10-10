@@ -49,6 +49,9 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # Agents only: commission % on their bookings (None = use the platform default from Settings)
+    agent_commission_percent = Column(Float, nullable=True)
+
     # Password reset
     reset_token = Column(String(255), nullable=True)
     reset_token_expires = Column(DateTime, nullable=True)
@@ -231,6 +234,9 @@ class SupplierBooking(Base):
     payment_card_last4 = Column(String(4), nullable=True)
     paid_at = Column(DateTime, nullable=True)
 
+    # Set when a Travel Agent made the booking
+    agent_commission = Column(Float, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -272,3 +278,42 @@ class HomeCard(Base):
     is_active = Column(Boolean, default=True)
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class LoginSession(Base):
+    """One row per login — used for working hours, 'online now' and login history."""
+    __tablename__ = "login_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    role = Column(String(20), nullable=False, index=True)
+    method = Column(String(20), default="password")       # password | otp | register
+    ip = Column(String(64), nullable=True)
+    user_agent = Column(String(300), nullable=True)
+    login_at = Column(DateTime, default=datetime.utcnow, index=True)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
+    logout_at = Column(DateTime, nullable=True)
+
+
+class AuditLog(Base):
+    """Who did what — admin/employee actions and agent bookings."""
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    user_name = Column(String(120), nullable=True)
+    role = Column(String(20), nullable=True, index=True)
+    action = Column(String(60), nullable=False, index=True)   # e.g. agent.approved, offer.updated, booking.confirmed
+    target = Column(String(160), nullable=True)               # e.g. "User #12", "Booking #40"
+    details = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class AppSetting(Base):
+    """Platform settings editable from Admin → Settings (key/value)."""
+    __tablename__ = "app_settings"
+
+    key = Column(String(60), primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)

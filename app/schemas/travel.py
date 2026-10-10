@@ -221,6 +221,7 @@ class SupplierBookingOut(BaseModel):
     payment_reference: Optional[str] = None
     payment_card_last4: Optional[str] = None
     paid_at: Optional[datetime] = None
+    agent_commission: Optional[float] = None
     created_at: datetime
     summary: Any = None
     supplier: Any = None

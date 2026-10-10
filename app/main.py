@@ -11,13 +11,16 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(), format="%(asct
 from fastapi import FastAPI  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
-from app.database import Base, engine  # noqa: E402
+from app.database import Base, engine, ensure_columns  # noqa: E402
 from app.routers import auth, listings, bookings, admin, wishlist, reviews, notifications, users  # noqa: E402
-from app.routers import travel, offers, home_content, services_api  # noqa: E402
+from app.routers import travel, offers, home_content, services_api, team  # noqa: E402
 
 # Creates tables only if they don't already exist — never drops/recreates
 # existing tables, so real data in sasmytrip.db is preserved.
 Base.metadata.create_all(bind=engine)
+# New columns on databases created by older versions
+ensure_columns("users", {"agent_commission_percent": "FLOAT"})
+ensure_columns("supplier_bookings", {"agent_commission": "FLOAT"})
 
 # Create / sync the Super Admin from .env (needs the tables above to exist).
 auth.seed_super_admin()
@@ -68,6 +71,9 @@ app.include_router(travel.bookings_router)
 app.include_router(travel.admin_router)
 app.include_router(offers.router)
 app.include_router(services_api.router)
+app.include_router(team.activity_router)
+app.include_router(team.admin_router)
+app.include_router(team.public_router)
 app.include_router(home_content.router)
 
 

@@ -53,6 +53,12 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     user = db.query(User).filter(User.id == int(user_id)).first()
     if user is None or not user.is_active:
         raise credentials_exception
+    # Keep the login session's "last seen" fresh (throttled) for online status & working hours
+    try:
+        from app.services.activity import touch
+        touch(db, payload.get("sid"), user.id)
+    except Exception:
+        pass
     return user
 
 

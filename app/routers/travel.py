@@ -32,6 +32,8 @@ from app.services.tbo.airports import city_of, search_airports
 from app.services.tbo.config import apply_markup
 from app.services.providers.base import ProviderError
 from app.routers import services_api
+from app.services import settings_store as st
+from app.services.activity import audit
 
 flights_router = APIRouter(prefix="/api/flights", tags=["Flights (TBO live)"])
 hotels_router = APIRouter(prefix="/api/hotels", tags=["Hotels (TBO live)"])
@@ -391,6 +393,9 @@ async def pay_travel_booking(booking_id: int, payload: TravelPaymentRequest, req
             b.supplier_booking_id = res.get("supplier_booking_id")
         b.status = SupplierBookingStatus.CONFIRMED
         b.error_message = None
+        if user.role == UserRole.AGENT:
+            pct = user.agent_commission_percent if user.agent_commission_percent is not None else st.get_float("agent_commission_percent")
+            b.agent_commission = round(b.amount * pct / 100.0, 2)
         db.add(Notification(user_id=user.id, title="Booking confirmed",
                             message=f"{b.title} is confirmed. Reference: {b.pnr or b.confirmation_no or b.payment_reference}"))
     except tbo_client.TBOError as e:
@@ -409,6 +414,8 @@ async def pay_travel_booking(booking_id: int, payload: TravelPaymentRequest, req
         raise HTTPException(status_code=e.status_code if e.status_code != 502 else 502,
                             detail=f"{e.message} Your payment has been refunded.")
     db.commit()
+    audit(db, user, "booking.confirmed", f"Booking #{b.id}", f"{b.product} · {b.title} · ₹{b.amount:,.0f}"
+          + (f" · commission ₹{b.agent_commission:,.0f}" if b.agent_commission else ""))
     db.refresh(b)
     return SupplierBookingOut.from_model(b)
 
@@ -432,6 +439,8 @@ async def cancel_travel_booking(booking_id: int, payload: CancelRequest, request
         except ProviderError as pe:
             raise HTTPException(status_code=pe.status_code, detail=pe.message)
         done = res.get("status") == "cancelled"
+        b.agent_commission = 0 if b.agent_commission else b.agent_commission
+        audit(db, user, "booking.cancelled", f"Booking #{b.id}", f"{b.product} · {b.title}", commit=False)
         b.status = SupplierBookingStatus.CANCELLED if done else SupplierBookingStatus.CANCELLATION_REQUESTED
         if done and b.payment_status == PaymentStatus.PAID:
             b.payment_status = PaymentStatus.REFUNDED
@@ -454,6 +463,8 @@ async def cancel_travel_booking(booking_id: int, payload: CancelRequest, request
         raise tbo_call_error(e)
     b.change_request_id = ",".join(ids)
     b.status = SupplierBookingStatus.CANCELLATION_REQUESTED
+    b.agent_commission = 0 if b.agent_commission else b.agent_commission
+    audit(db, user, "booking.cancelled", f"Booking #{b.id}", f"{b.product} · {b.title}", commit=False)
     db.add(Notification(user_id=b.customer_id, title="Cancellation requested",
                         message=f"We've asked the {'airline' if b.product == 'flight' else 'hotel'} to cancel {b.title}. "
                                 "Refund (after supplier charges) will follow once it's processed."))

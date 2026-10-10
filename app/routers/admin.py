@@ -10,6 +10,7 @@ from app.schemas.schemas import (
     UserOut, ListingOut, ListingCreate, BookingOut, TokenResponse, ReviewOut, PaymentTransactionOut,
 )
 from app.core.security import get_current_user, require_roles, hash_password, create_access_token
+from app.services.activity import audit
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
 
@@ -145,19 +146,25 @@ def list_users(
     summary="Verify or (de)activate a user — e.g. approve an Agent/Distributor",
     dependencies=[Depends(admin_or_super)],
 )
-def update_user_status(user_id: int, payload: UpdateUserStatus, db: Session = Depends(get_db)):
+def update_user_status(user_id: int, payload: UpdateUserStatus, db: Session = Depends(get_db),
+                       me: User = Depends(get_current_user)):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
     if user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
         raise HTTPException(status_code=403, detail="Use the Admins endpoints to manage admin accounts.")
 
-    if payload.is_verified is not None:
+    changes = []
+    if payload.is_verified is not None and payload.is_verified != user.is_verified:
         user.is_verified = payload.is_verified
-    if payload.is_active is not None:
+        changes.append("verified" if payload.is_verified else "unverified")
+    if payload.is_active is not None and payload.is_active != user.is_active:
         user.is_active = payload.is_active
+        changes.append("reactivated" if payload.is_active else "suspended")
 
     db.commit()
+    if changes:
+        audit(db, me, f"user.{changes[0]}", f"{user.role.value.title()} #{user.id} {user.full_name}", ", ".join(changes))
     db.refresh(user)
     return user
 
@@ -351,7 +358,7 @@ def list_admins(db: Session = Depends(get_db)):
     summary="Create a new Admin account (Super Admin only)",
     dependencies=[Depends(super_admin_only)],
 )
-def create_admin(payload: CreateAdminRequest, db: Session = Depends(get_db)):
+def create_admin(payload: CreateAdminRequest, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     existing = db.query(User).filter(User.email == payload.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="An account with this email already exists.")
@@ -368,6 +375,7 @@ def create_admin(payload: CreateAdminRequest, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
+    audit(db, me, "employee.created", f"Admin #{user.id} {user.full_name}", user.email)
 
     token = create_access_token({"sub": str(user.id), "role": user.role.value})
     return TokenResponse(access_token=token, user=UserOut.model_validate(user))
@@ -389,4 +397,5 @@ def revoke_admin(admin_id: int, db: Session = Depends(get_db), current_user: Use
 
     admin.is_active = False
     db.commit()
+    audit(db, current_user, "employee.revoked", f"Admin #{admin.id} {admin.full_name}", admin.email)
     return None
